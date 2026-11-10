@@ -2540,7 +2540,7 @@ function makeEngine(onChange, opts) {
 
   /* ----- bots ----- */
   function botBet(p) {
-    if (!p.bot) return;
+    if (!p.bot || p.forced) return;
     const pick = arr => arr[Math.floor(Math.random() * arr.length)];
     const heat = heatFor(p.id);
     if (!heat) { p.bet = [Math.floor(Math.random() * K)]; p.betLocked = true; return; }
@@ -2622,9 +2622,19 @@ function makeEngine(onChange, opts) {
       resetRoundFlags(); S.phase = 'bet';
       ids().forEach(i => botBet(P[i]));
     } else if (n === 3) {
-      ids().forEach(i => { P[i].status = 'in'; P[i].town = 0; });
-      S.positions = {}; S.prevActive = {}; ids().forEach(i => { S.prevActive[i] = 1; });
-      // prevPositions (end of stage 2) stay: everyone sees the merged market
+      ids().forEach(i => { P[i].status = 'in'; P[i].town = 0; P[i].forced = false; });
+      // The merged market only has room for about n* shops, so it opens with a few fewer than that (spots drawn at random,
+      // real students first). Everyone else watches round 1 and may enter from round 2. Otherwise all shops pile into
+      // one market at once and every shop loses in round 1.
+      const shuf = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = a[i]; a[i] = a[j]; a[j] = t; } return a; };
+      const all = ids(); const open = Math.max(2, S.nstar - 1);
+      const order = shuf(all.filter(i => !P[i].bot)).concat(shuf(all.filter(i => P[i].bot)));
+      S.positions = {}; S.prevActive = {};
+      order.forEach((i, k) => {
+        if (k < open || all.length <= open) S.prevActive[i] = 1;
+        else { P[i].status = 'out'; P[i].bet = 'out'; P[i].forced = true; }
+      });
+      Object.keys(S.prevPositions).forEach(i => { if (!S.prevActive[i]) delete S.prevPositions[i]; });
       resetRoundFlags(); S.phase = 'bet';
       ids().forEach(i => botBet(P[i]));
     }
@@ -2727,7 +2737,7 @@ function makeEngine(onChange, opts) {
         S.round++; resetRoundFlags();
         if (S.stage === 1) { S.phase = 'quantity'; activeIds().forEach(i => botQ(P[i])); }
         else {
-          ids().forEach(i => { if (P[i].status === 'wait' || P[i].status === 'out') P[i].status = 'in'; });
+          ids().forEach(i => { P[i].forced = false; if (P[i].status === 'wait' || P[i].status === 'out') P[i].status = 'in'; });
           S.phase = 'bet'; S.positions = {}; ids().forEach(i => { if (P[i].bet === null || P[i].bet === undefined) P[i].bet = null; botBet(P[i]); });
         }
         startPhaseTimer(S.phase); return changed();
@@ -2769,7 +2779,7 @@ function makeEngine(onChange, opts) {
     }
     const mates = ids().filter(i => i !== pid && S.stage === 2 && P[i].town === p.town).map(i => P[i].name);
     const last = p.log.length ? p.log[p.log.length - 1] : null;
-    return { id: pid, name: p.name, town: p.town, status: p.status, bet: p.bet, betLocked: p.betLocked, q: p.q, price: p.price,
+    return { id: pid, name: p.name, town: p.town, status: p.status, forced: !!p.forced, bet: p.bet, betLocked: p.betLocked, q: p.q, price: p.price,
       qLocked: p.qLocked, cum: p.cum, info, prevAB: p.prevAB, lastAB: p.lastAB, heat: S.phase === 'bet' ? heatFor(pid) : null, rivalSets: S.phase === 'bet' ? rivalSets(pid) : null,
       mates, last, log: p.log };
   }
@@ -3206,7 +3216,7 @@ function resultsHTML(pub, me, isHost) {
       h += '<div class="card"><div class="cap">Your demand and costs this round. The ring marks where MR = MC.</div>' + chartSVG({ A: mine.A, B: mine.B, extra: mine.extra, q: mine.q, best: { q: mine.bestQ }, ghost: me.prevAB && me.prevAB.A != null && sum.round + sum.stage > 0 && me.log.length > 1 ? me.prevAB : null }) + '</div>';
     }
   } else if (me && me.status === 'out') {
-    h += '<div class="card mine"><div class="big">$0 <small>you stayed out</small></div><div class="sub">No cups, no costs. Watch what the others earned, and decide whether to enter next round.</div><div class="sub">Total so far: <b>' + signed(me.cum) + '</b></div></div>';
+    h += '<div class="card mine"><div class="big">$0 <small>' + (me.forced ? 'you sat out this round' : 'you stayed out') + '</small></div><div class="sub">No cups, no costs. Watch what the others earned, and decide whether to enter next round.</div><div class="sub">Total so far: <b>' + signed(me.cum) + '</b></div></div>';
   }
   h += `<div class="insight">${esc(insightText(sum))}</div>`;
   if (sum.stage === 3 && pub.reveal) h += `<div class="insight">${sum.n > pub.nstar ? 'More than ' + pub.nstar + ' shops were open, so the average shop lost money. ' : sum.n < pub.nstar ? 'Fewer than ' + pub.nstar + ' shops were open, so there was room for more profit. ' : 'Exactly ' + pub.nstar + ' shops were open. '}The market can support about ${pub.nstar}.</div>`;
@@ -3290,10 +3300,11 @@ function renderStudent(keepScroll) {
       <ol class="how"><li><b>Stage 1.</b> Everyone sells the same cup. See what happens to price and profit.</li><li><b>Stage 2.</b> Pick 1 to 3 bets that make your shop different from the others.</li><li><b>Stage 3.</b> The market opens to everyone. Enter, move or stay out, and see where profits end up.</li></ol>${costsPanel()}</div>`;
   } else if (pub.phase === 'bet') {
     if (me.status === 'wait') body = '<div class="card center"><p>You joined while a round was running. You will be dealt in at the next round.</p></div>';
+    else if (me.status === 'out' && me.forced) body = `<div class="card center"><h2>Watch this round.</h2><p>The towns have merged into one market, and it has room for only about half of the shops. The open spots were drawn at random and you did not get one, so you earn $0 this round. Look at who is where. If the shops inside earn a profit, you can try to enter next round.</p>${wheelSVG({ counts: pub.occupancy.map(a => a.length), center1: pub.nActive + ' shops open' })}${leverLegend()}</div>`;
     else body = betView(pub, me);
   } else if (pub.phase === 'quantity') {
     if (me.status === 'wait') body = '<div class="card center"><p>You joined while a round was running. You will be dealt in at the next round.</p></div>';
-    else if (me.status === 'out') body = `<div class="card center"><h2>You are staying out this round.</h2><p>No cups, no costs: $0. Here is where the other shops are sitting.</p>${wheelSVG({ counts: pub.occupancy.map(a => a.length), center1: pub.nActive + ' shops' })}${leverLegend()}</div>`;
+    else if (me.status === 'out') body = `<div class="card center"><h2>${me.forced ? 'You are watching this round.' : 'You are staying out this round.'}</h2><p>No cups, no costs: $0. Here is where the other shops are sitting.</p>${wheelSVG({ counts: pub.occupancy.map(a => a.length), center1: pub.nActive + ' shops' })}${leverLegend()}</div>`;
     else body = qtyView(pub, me);
   } else if (pub.phase === 'results') {
     body = `<div class="card tight"><h2>Round results <span class="r">${STAGE_NAMES[pub.stage]}${pub.stage < 4 ? ', round ' + pub.round + ' of ' + pub.rounds[pub.stage] : ''}</span></h2><p class="wait">Waiting for the instructor to start the next round.</p></div>` + resultsHTML(pub, me, false);
@@ -3429,6 +3440,7 @@ function balanceNote(pub) {
 }
 function hostPrompt(pub) {
   const st = pub.stage, ph = pub.phase;
+  if (ph === 'bet' && st === 3 && pub.round === 1) return 'Tell them: the towns have merged, but the market fits only about ' + pub.nstar + ' shops. About half the class (' + Math.max(2, pub.nstar - 1) + ' spots, drawn at random) starts open; the rest watch round 1 and can enter from round 2. Use the colors: green means a newcomer would profit.';
   if (ph === 'bet') return st === 2 ? 'Tell them: pick 1 to 3 bets that make you different. Bets near other shops share customers, and each extra bet costs $60 a day.' : 'Tell them: use the colors. Green means a newcomer would earn a profit, red means a loss. Everyone else is reading the same map.';
   if (ph === 'quantity') return st === 1 ? 'Ask: can anyone sell more than $6? Try it on your slider. Where is your profit highest?' : 'Ask: where does MR cross MC? Is your price on the demand curve at that quantity?';
   if (st === 1) return 'Ask: why could nobody charge more than $6? (Flat demand: Part 1 slide 10, and the left graph of Part 2 slide 6.)';
