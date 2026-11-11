@@ -2486,7 +2486,7 @@ function makeEngine(onChange, opts) {
   const S = {
     code: opts.code || '', stage: 0, round: 0, phase: 'lobby', deadline: null, auto: false,
     timers: { bet: 60, quantity: 80 },
-    nstarManual: null, reveal: false, nstar: 3, cstar: cstarFor(3),
+    nstarManual: null, reveal: false, closeLosers: true, closeNext: {}, nstar: 3, cstar: cstarFor(3),
     players: {}, positions: {}, prevPositions: {}, prevActive: {},
     results: null, history: [], rounds: { 1: 1, 2: 2, 3: 4 }, seq: 0
   };
@@ -2561,7 +2561,7 @@ function makeEngine(onChange, opts) {
     } else {
       // Stage 3: bots read the same signals as students (last round's map and the shop count vs the balance level).
       const was = !!S.prevActive[p.id];
-      const a = Object.keys(S.prevActive).filter(i => P[i] && S.prevActive[i]).length;
+      const a = Object.keys(S.prevActive).filter(i => P[i] && S.prevActive[i] && !P[i].closed).length;   // shops closed for losses are already gone
       const o = Math.max(1, ids().length - a), T = S.nstar;
       if (was && had) {
         const own = estSet(p.id, p.bet);
@@ -2622,7 +2622,8 @@ function makeEngine(onChange, opts) {
       resetRoundFlags(); S.phase = 'bet';
       ids().forEach(i => botBet(P[i]));
     } else if (n === 3) {
-      ids().forEach(i => { P[i].status = 'in'; P[i].town = 0; P[i].forced = false; });
+      ids().forEach(i => { P[i].status = 'in'; P[i].town = 0; P[i].forced = false; P[i].closed = false; });
+      S.closeNext = {};
       // The merged market only has room for about n* shops, so it opens with a few fewer than that (spots drawn at random,
       // real students first). Everyone else watches round 1 and may enter from round 2. Otherwise all shops pile into
       // one market at once and every shop loses in round 1.
@@ -2672,7 +2673,7 @@ function makeEngine(onChange, opts) {
       if (!Array.isArray(p.bet) && p.bet !== 'out') p.bet = [Math.floor(Math.random() * K)];   // never picked: random slot
       if (p.bet === 'out') p.status = 'out'; else S.positions[id] = p.bet;
     });
-    ids().forEach(id => { if (P[id].status === 'out' && P[id].bet !== 'out') P[id].status = 'in'; });
+    ids().forEach(id => { if (P[id].status === 'out' && P[id].bet !== 'out' && !P[id].forced) P[id].status = 'in'; });
     Object.keys(S.positions).forEach(id => { if (!P[id] || P[id].status !== 'in' || P[id].bet === 'out') delete S.positions[id]; });
   }
   function compute() {
@@ -2712,6 +2713,14 @@ function makeEngine(onChange, opts) {
     S.results = { rows: res, outs, summary };
     S.prevPositions = Object.assign({}, S.positions);
     S.prevActive = nowAct;
+    // Stage 3: if more shops are open than the market can support, the biggest losers close for the next round
+    // (their customers go to the survivors). They earn $0 next round and may re-enter the round after.
+    S.closeNext = {}; S.results.closing = [];
+    if (S.stage === 3 && S.closeLosers && S.round < S.rounds[3] && n > S.nstar) {
+      const losers = res.slice().reverse().filter(r => r.profit < -1e-6);
+      const k = Math.min(n - S.nstar, losers.length);
+      losers.slice(0, k).forEach(r => { S.closeNext[r.id] = 1; S.results.closing.push({ id: r.id, name: r.name, bot: r.bot, profit: r.profit }); });
+    }
   }
   function nextLabel() {
     if (S.phase === 'lobby') return 'Start Stage 1';
@@ -2737,7 +2746,9 @@ function makeEngine(onChange, opts) {
         S.round++; resetRoundFlags();
         if (S.stage === 1) { S.phase = 'quantity'; activeIds().forEach(i => botQ(P[i])); }
         else {
-          ids().forEach(i => { P[i].forced = false; if (P[i].status === 'wait' || P[i].status === 'out') P[i].status = 'in'; });
+          ids().forEach(i => { P[i].forced = false; P[i].closed = false; if (P[i].status === 'wait' || P[i].status === 'out') P[i].status = 'in'; });
+          Object.keys(S.closeNext || {}).forEach(i => { if (P[i]) { P[i].status = 'out'; P[i].bet = 'out'; P[i].forced = true; P[i].closed = true; } });
+          S.closeNext = {};
           S.phase = 'bet'; S.positions = {}; ids().forEach(i => { if (P[i].bet === null || P[i].bet === undefined) P[i].bet = null; botBet(P[i]); });
         }
         startPhaseTimer(S.phase); return changed();
@@ -2752,6 +2763,7 @@ function makeEngine(onChange, opts) {
   function setTimers(bet, q) { S.timers.bet = bet; S.timers.quantity = q; changed(); }
   function setAuto(v) { S.auto = !!v; changed(); }
   function setReveal(v) { S.reveal = !!v; changed(); }
+  function setCloseLosers(v) { S.closeLosers = !!v; if (!S.closeLosers) { S.closeNext = {}; if (S.results) S.results.closing = []; } changed(); }
   function setRounds(stage, n) { n = Math.max(1, Math.min(8, +n || 1)); S.rounds[stage] = n; changed(); }
   function extend(sec) { if (S.deadline) { S.deadline += sec * 1000; changed(); } }
 
@@ -2763,7 +2775,7 @@ function makeEngine(onChange, opts) {
     const pr = progress();
     return {
       code: S.code, seq: S.seq, stage: S.stage, round: S.round, phase: S.phase, deadline: S.deadline, now: Date.now(),
-      rounds: S.rounds, reveal: S.reveal, nstar: S.nstar, cstar: S.cstar, auto: S.auto, timers: S.timers, nextLabel: nextLabel(),
+      rounds: S.rounds, reveal: S.reveal, closeLosers: S.closeLosers, nstar: S.nstar, cstar: S.cstar, auto: S.auto, timers: S.timers, nextLabel: nextLabel(),
       progress: pr, occupancy: occ, occupancyIsPrev: S.phase === 'bet',
       players: ids().map(i => ({ id: i, name: P[i].name, bot: P[i].bot, status: P[i].status, town: P[i].town,
         locked: S.phase === 'bet' ? P[i].betLocked : S.phase === 'quantity' ? P[i].qLocked : false, connected: P[i].connected, cum: P[i].cum })),
@@ -2779,12 +2791,12 @@ function makeEngine(onChange, opts) {
     }
     const mates = ids().filter(i => i !== pid && S.stage === 2 && P[i].town === p.town).map(i => P[i].name);
     const last = p.log.length ? p.log[p.log.length - 1] : null;
-    return { id: pid, name: p.name, town: p.town, status: p.status, forced: !!p.forced, bet: p.bet, betLocked: p.betLocked, q: p.q, price: p.price,
+    return { id: pid, name: p.name, town: p.town, status: p.status, forced: !!p.forced, closed: !!p.closed, closing: !!(S.closeNext && S.closeNext[pid]), bet: p.bet, betLocked: p.betLocked, q: p.q, price: p.price,
       qLocked: p.qLocked, cum: p.cum, info, prevAB: p.prevAB, lastAB: p.lastAB, heat: S.phase === 'bet' ? heatFor(pid) : null, rivalSets: S.phase === 'bet' ? rivalSets(pid) : null,
       mates, last, log: p.log };
   }
   recalcNstar();
-  return { S, P, ids, addPlayer, removePlayer, setConnected, startStage, next, setBet, setDraft, lockQ, setNstar, setTimers, setAuto, setReveal, setRounds,
+  return { S, P, ids, addPlayer, removePlayer, setConnected, startStage, next, setBet, setDraft, lockQ, setNstar, setTimers, setAuto, setReveal, setRounds, setCloseLosers,
     extend, tick, publicView, meView, progress, recalcNstar };
 }
 
@@ -3218,7 +3230,9 @@ function resultsHTML(pub, me, isHost) {
   } else if (me && me.status === 'out') {
     h += '<div class="card mine"><div class="big">$0 <small>' + (me.forced ? 'you sat out this round' : 'you stayed out') + '</small></div><div class="sub">No cups, no costs. Watch what the others earned, and decide whether to enter next round.</div><div class="sub">Total so far: <b>' + signed(me.cum) + '</b></div></div>';
   }
+  if (me && me.closing) h += '<div class="card mine bad"><div class="big" style="font-size:1.7rem">Your shop closes <small>next round</small></div><div class="sub">More shops were open than the market can support, and yours lost the most. Next round you earn $0, and your customers go to the other shops. You may re-enter the round after that.</div></div>';
   h += `<div class="insight">${esc(insightText(sum))}</div>`;
+  if (sum.stage === 3 && R.closing && R.closing.length) h += `<div class="insight"><b>Closing for next round (biggest losses):</b> ${R.closing.map(c => esc(c.name) + (c.bot ? ' (bot)' : '') + ' ' + signed(c.profit)).join(', ')}. Their customers go to the shops that stay, so demand shifts right for the survivors.</div>`;
   if (sum.stage === 3 && pub.reveal) h += `<div class="insight">${sum.n > pub.nstar ? 'More than ' + pub.nstar + ' shops were open, so the average shop lost money. ' : sum.n < pub.nstar ? 'Fewer than ' + pub.nstar + ' shops were open, so there was room for more profit. ' : 'Exactly ' + pub.nstar + ' shops were open. '}The market can support about ${pub.nstar}.</div>`;
   h += `<div class="stats"><div><b>${sum.n}</b><span>shops open</span></div><div><b>${sum.n ? money(sum.avgPrice, 2) : '-'}</b><span>average price</span></div><div><b>${sum.n ? signed(sum.avgProfit) : '-'}</b><span>average profit per shop</span></div><div><b>${sum.profitable} / ${sum.losing}</b><span>profit / loss</span></div>${sum.stage === 3 ? `<div><b>${sum.entered} in, ${sum.exited} out</b><span>vs last round</span></div>` : ''}</div>`;
   if (sum.stage > 1 && (sum.stage === 3 || me)) {
@@ -3300,11 +3314,12 @@ function renderStudent(keepScroll) {
       <ol class="how"><li><b>Stage 1.</b> Everyone sells the same cup. See what happens to price and profit.</li><li><b>Stage 2.</b> Pick 1 to 3 bets that make your shop different from the others.</li><li><b>Stage 3.</b> The market opens to everyone. Enter, move or stay out, and see where profits end up.</li></ol>${costsPanel()}</div>`;
   } else if (pub.phase === 'bet') {
     if (me.status === 'wait') body = '<div class="card center"><p>You joined while a round was running. You will be dealt in at the next round.</p></div>';
+    else if (me.status === 'out' && me.closed) body = `<div class="card center"><h2>Your shop is closed this round.</h2><p>More shops were open than the market can support, and your shop lost the most, so it closed. You earn $0 this round, and your customers went to the shops that stayed. Look at who is where. If the shops inside earn a profit, you may re-enter next round.</p>${wheelSVG({ counts: pub.occupancy.map(a => a.length), center1: pub.nActive + ' shops open' })}${leverLegend()}</div>`;
     else if (me.status === 'out' && me.forced) body = `<div class="card center"><h2>Watch this round.</h2><p>The towns have merged into one market, and it has room for only about half of the shops. The open spots were drawn at random and you did not get one, so you earn $0 this round. Look at who is where. If the shops inside earn a profit, you can try to enter next round.</p>${wheelSVG({ counts: pub.occupancy.map(a => a.length), center1: pub.nActive + ' shops open' })}${leverLegend()}</div>`;
     else body = betView(pub, me);
   } else if (pub.phase === 'quantity') {
     if (me.status === 'wait') body = '<div class="card center"><p>You joined while a round was running. You will be dealt in at the next round.</p></div>';
-    else if (me.status === 'out') body = `<div class="card center"><h2>${me.forced ? 'You are watching this round.' : 'You are staying out this round.'}</h2><p>No cups, no costs: $0. Here is where the other shops are sitting.</p>${wheelSVG({ counts: pub.occupancy.map(a => a.length), center1: pub.nActive + ' shops' })}${leverLegend()}</div>`;
+    else if (me.status === 'out') body = `<div class="card center"><h2>${me.closed ? 'Your shop is closed this round.' : me.forced ? 'You are watching this round.' : 'You are staying out this round.'}</h2><p>No cups, no costs: $0. Here is where the other shops are sitting.</p>${wheelSVG({ counts: pub.occupancy.map(a => a.length), center1: pub.nActive + ' shops' })}${leverLegend()}</div>`;
     else body = qtyView(pub, me);
   } else if (pub.phase === 'results') {
     body = `<div class="card tight"><h2>Round results <span class="r">${STAGE_NAMES[pub.stage]}${pub.stage < 4 ? ', round ' + pub.round + ' of ' + pub.rounds[pub.stage] : ''}</span></h2><p class="wait">Waiting for the instructor to start the next round.</p></div>` + resultsHTML(pub, me, false);
@@ -3413,12 +3428,12 @@ function renderHost() {
       <label class="inl">Stage 2 rounds <input id="r2" type="number" min="1" max="6" value="${S.rounds[2]}" onchange="ui.setRounds(2,this.value)"></label>
       <label class="inl">Stage 3 rounds <input id="r3" type="number" min="1" max="8" value="${S.rounds[3]}" onchange="ui.setRounds(3,this.value)"></label>
       <label class="inl"><input type="checkbox" ${S.auto ? 'checked' : ''} onchange="ui.setAuto(this.checked)"> Auto advance when time is up</label>
-      ${revealToggle(pub)}</div></details>
+      ${revealToggle(pub)}${closeToggle(pub)}</div></details>
       ${costsPanel()}</div>`;
   } else if (pub.phase === 'bet' || pub.phase === 'quantity') {
     const occ = pub.occupancy; const cnt = occ.map(a => a.length);
     main = `<div class="card"><h2>${STAGE_NAMES[pub.stage]}, round ${pub.round} of ${pub.rounds[pub.stage]} ${timerHTML(pub)} <span class="r">${pub.phase === 'bet' ? 'students are picking bets' : 'students are choosing output'}</span></h2>
-      <p>${esc(hostPrompt(pub))}</p>${pub.stage === 3 && pub.phase === 'bet' ? '<p>' + revealToggle(pub) + '</p>' : ''}<div class="progbar"><i style="width:${pub.progress.total ? pub.progress.locked / pub.progress.total * 100 : 0}%"></i></div><div class="note">${pub.progress.locked} of ${pub.progress.total} students locked in (bots are always locked)</div>
+      <p>${esc(hostPrompt(pub))}</p>${pub.stage === 3 && pub.phase === 'bet' ? '<p>' + revealToggle(pub) + closeToggle(pub) + '</p>' : ''}<div class="progbar"><i style="width:${pub.progress.total ? pub.progress.locked / pub.progress.total * 100 : 0}%"></i></div><div class="note">${pub.progress.locked} of ${pub.progress.total} students locked in (bots are always locked)</div>
       ${pub.stage > 1 ? wheelSVG({ counts: cnt, center1: pub.occupancyIsPrev ? 'last round' : 'this round', center2: pub.nActive + ' shops' }) + leverLegend() : ''}</div>
       <div class="card"><div class="cap">Who is where</div><div class="chips">${pub.players.map(p => `<span class="chip ${p.locked ? 'ok' : ''} ${p.connected ? '' : 'off'}">${esc(p.name)}${p.bot ? ' (bot)' : ''} ${p.status === 'out' ? '(out)' : p.locked ? '&#10003;' : '...'}</span>`).join('')}</div></div>`;
   } else if (pub.phase === 'results') {
@@ -3432,6 +3447,9 @@ function renderHost() {
   app.innerHTML = `<div class="hostwrap"><header class="top"><div><b>Coffee Wheel</b><span class="mini">instructor</span></div>${stagePills(pub)}</header><div class="hostgrid"><main>${main}</main>${side}</div></div>`;
   uiKey = key; updateDynamic();
 }
+function closeToggle(pub) {
+  return `<label class="inl reveal"><input type="checkbox" ${pub.closeLosers ? 'checked' : ''} onchange="ui.setCloseLosers(this.checked)"> In Stage 3, close the biggest losers for one round when too many shops are open</label>`;
+}
 function revealToggle(pub) {
   return `<label class="inl reveal"><input type="checkbox" ${pub.reveal ? 'checked' : ''} onchange="ui.setReveal(this.checked)"> Tell students the balance level (about ${pub.nstar} shops) in Stage 3</label>`;
 }
@@ -3441,6 +3459,7 @@ function balanceNote(pub) {
 function hostPrompt(pub) {
   const st = pub.stage, ph = pub.phase;
   if (ph === 'bet' && st === 3 && pub.round === 1) return 'Tell them: the towns have merged, but the market fits only about ' + pub.nstar + ' shops. About half the class (' + Math.max(2, pub.nstar - 1) + ' spots, drawn at random) starts open; the rest watch round 1 and can enter from round 2. Use the colors: green means a newcomer would profit.';
+  if (ph === 'bet' && st === 3 && pub.round > 1 && pub.results && pub.results.closing && pub.results.closing.length) return 'Say: ' + pub.results.closing.length + ' shop' + (pub.results.closing.length > 1 ? 's' : '') + ' with the biggest losses closed, so they are out this round and their customers go to the shops that stayed. Closed shops may re-enter next round. Everyone else: enter, move or stay out, using the colors.';
   if (ph === 'bet') return st === 2 ? 'Tell them: pick 1 to 3 bets that make you different. Bets near other shops share customers, and each extra bet costs $60 a day.' : 'Tell them: use the colors. Green means a newcomer would earn a profit, red means a loss. Everyone else is reading the same map.';
   if (ph === 'quantity') return st === 1 ? 'Ask: can anyone sell more than $6? Try it on your slider. Where is your profit highest?' : 'Ask: where does MR cross MC? Is your price on the demand curve at that quantity?';
   if (st === 1) return 'Ask: why could nobody charge more than $6? (Flat demand: Part 1 slide 10, and the left graph of Part 2 slide 6.)';
@@ -3471,7 +3490,7 @@ const ui = {
   lockQ() { send({ t: 'lockq', q: local.cups / UNIT, price: local.price }); if (role === 'solo') return engine.next(); const lk = $('#lockbtn'); if (lk) { lk.textContent = 'Locked in. You can still adjust until time is called.'; lk.classList.add('locked'); } },
   next() { engine.next(); }, nextSolo() { engine.next(); }, extend(s) { engine.extend(s); },
   addBots(n) { const used = engine.ids().map(i => engine.P[i].name); const pool = BOT_NAMES.filter(x => !used.includes(x)); for (let i = 0; i < n && pool.length; i++) engine.addPlayer('bot' + Math.random().toString(36).slice(2, 7), pool.shift(), true); },
-  setNstar(v) { engine.setNstar(+v); }, setAuto(v) { engine.setAuto(v); }, setReveal(v) { engine.setReveal(v); },
+  setNstar(v) { engine.setNstar(+v); }, setAuto(v) { engine.setAuto(v); }, setReveal(v) { engine.setReveal(v); }, setCloseLosers(v) { engine.setCloseLosers(v); },
   setTimers() { engine.setTimers(+$('#tb').value || 0, +$('#tq').value || 0); }, setRounds(s, v) { engine.setRounds(s, v); }
 };
 boot();
