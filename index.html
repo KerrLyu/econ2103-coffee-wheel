@@ -2767,6 +2767,8 @@ function makeEngine(onChange, opts) {
   function setTimers(bet, q) { S.timers.bet = bet; S.timers.quantity = q; changed(); }
   function setAuto(v) { S.auto = !!v; changed(); }
   function setReveal(v) { S.reveal = !!v; changed(); }
+  // Host shortcut for a class that has not played Stages 1 and 2: go straight from the lobby to Stage 3.
+  function skipToStage3() { if (S.phase !== 'lobby' || !ids().length) return; S.skipped = true; startStage(3); }
   function setCloseLosers(v) { S.closeLosers = !!v; if (!S.closeLosers) { S.closeNext = {}; if (S.results) S.results.closing = []; } changed(); }
   function setRounds(stage, n) { n = Math.max(1, Math.min(8, +n || 1)); S.rounds[stage] = n; changed(); }
   function extend(sec) { if (S.deadline) { S.deadline += sec * 1000; changed(); } }
@@ -2779,7 +2781,7 @@ function makeEngine(onChange, opts) {
     const pr = progress();
     return {
       code: S.code, seq: S.seq, stage: S.stage, round: S.round, phase: S.phase, deadline: S.deadline, now: Date.now(),
-      rounds: S.rounds, reveal: S.reveal, closeLosers: S.closeLosers, nstar: S.nstar, cstar: S.cstar, auto: S.auto, timers: S.timers, nextLabel: nextLabel(),
+      rounds: S.rounds, skipped: !!S.skipped, reveal: S.reveal, closeLosers: S.closeLosers, nstar: S.nstar, cstar: S.cstar, auto: S.auto, timers: S.timers, nextLabel: nextLabel(),
       progress: pr, occupancy: occ, occupancyIsPrev: S.phase === 'bet',
       players: ids().map(i => ({ id: i, name: P[i].name, bot: P[i].bot, status: P[i].status, town: P[i].town,
         locked: S.phase === 'bet' ? P[i].betLocked : S.phase === 'quantity' ? P[i].qLocked : false, connected: P[i].connected, cum: P[i].cum })),
@@ -2800,7 +2802,7 @@ function makeEngine(onChange, opts) {
       mates, last, log: p.log };
   }
   recalcNstar();
-  return { S, P, ids, addPlayer, removePlayer, setConnected, startStage, next, setBet, setDraft, lockQ, setNstar, setTimers, setAuto, setReveal, setRounds, setCloseLosers,
+  return { S, P, ids, addPlayer, removePlayer, setConnected, startStage, next, setBet, setDraft, lockQ, setNstar, setTimers, setAuto, setReveal, setRounds, setCloseLosers, skipToStage3,
     extend, tick, publicView, meView, progress, recalcNstar };
 }
 
@@ -3303,6 +3305,7 @@ function studentIntro(pub) {
   const st = pub.stage;
   if (st === 1) return '<b>Everyone sells the same cup.</b> Customers go to whoever is cheapest, so the market price is $6.00 and you cannot change it. You only choose how many cups to make. Try charging more and see what happens.';
   if (st === 2) return '<b>Make your shop different.</b> Pick 1 to 3 bets on the wheel. Shops with bets near yours are similar to you and share your customers. You compete only with the shops in your own town this stage.';
+  if (pub.skipped) return '<b>Welcome to the coffee market.</b> You run a coffee shop on a wheel of tastes. Pick 1 to 3 bets on the wheel; shops with bets near yours share your customers. Then choose how many cups to make and your price. <b>Anyone can open, move or close.</b> Each round you may keep your bets, change them, or stay out for a sure $0. Watch the profit estimates: profit pulls shops in, losses push them out.';
   return '<b>The towns merge into one market, and anyone can open or close.</b> Each round you may keep your bets, change them, or stay out for a sure $0. Watch the profit estimates: profit pulls shops in, losses push them out.';
 }
 function renderStudent(keepScroll) {
@@ -3445,6 +3448,7 @@ function renderHost() {
   } else main = finalHTML(pub, null);
   const ctrl = pub.phase === 'final' ? '' : `<div class="card ctrl"><button class="btn primary big" onclick="ui.next()">${esc(pub.nextLabel)}</button>
     ${pub.phase === 'bet' || pub.phase === 'quantity' ? '<button class="btn ghost" onclick="ui.extend(30)">+30 seconds</button>' : ''}
+    ${pub.phase === 'lobby' ? '<button class="btn ghost" onclick="ui.skipToStage3()">Skip to Stage 3 (class has not played Stages 1 and 2)</button>' : ''}
     ${pub.phase !== 'lobby' ? `<label class="inl"><input type="checkbox" ${S.auto ? 'checked' : ''} onchange="ui.setAuto(this.checked)"> auto advance</label>` : ''}</div>`;
   const side = `<aside class="side"><div class="card codecard"><div class="lab">Room code</div><div class="code">${esc(code)}</div><div class="qr">${qr}</div><div class="url">${esc(url)}</div><div class="lkrow">${linkStatusHTML()}</div></div>${ctrl}</aside>`;
   if (key !== uiKey || pub.phase === 'lobby' || pub.phase === 'bet' || pub.phase === 'quantity') { /* always re-render host: no sliders here */ }
@@ -3492,7 +3496,7 @@ const ui = {
   lockBet() { if (!local.slots.length) return; send({ t: 'bet', slot: local.slots, lock: true }); if (role === 'solo') return engine.next(); const lk = $('#lockbtn'); if (lk) { lk.textContent = 'Locked in. You can still change until time is called.'; lk.classList.add('locked'); } },
   stayOut() { local.slots = []; send({ t: 'bet', slot: 'out', lock: true }); if (role === 'solo') return engine.next(); const lk = $('#lockbtn'); if (lk) lk.textContent = 'You are staying out. Tap a bet to change your mind.'; },
   lockQ() { send({ t: 'lockq', q: local.cups / UNIT, price: local.price }); if (role === 'solo') return engine.next(); const lk = $('#lockbtn'); if (lk) { lk.textContent = 'Locked in. You can still adjust until time is called.'; lk.classList.add('locked'); } },
-  next() { engine.next(); }, nextSolo() { engine.next(); }, extend(s) { engine.extend(s); },
+  skipToStage3() { engine.skipToStage3(); }, next() { engine.next(); }, nextSolo() { engine.next(); }, extend(s) { engine.extend(s); },
   addBots(n) { const used = engine.ids().map(i => engine.P[i].name); const pool = BOT_NAMES.filter(x => !used.includes(x)); for (let i = 0; i < n && pool.length; i++) engine.addPlayer('bot' + Math.random().toString(36).slice(2, 7), pool.shift(), true); },
   setNstar(v) { engine.setNstar(+v); }, setAuto(v) { engine.setAuto(v); }, setReveal(v) { engine.setReveal(v); }, setCloseLosers(v) { engine.setCloseLosers(v); },
   setTimers() { engine.setTimers(+$('#tb').value || 0, +$('#tq').value || 0); }, setRounds(s, v) { engine.setRounds(s, v); }
