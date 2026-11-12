@@ -3452,7 +3452,7 @@ function renderHost() {
   uiKey = key; updateDynamic();
 }
 function closeToggle(pub) {
-  return `<label class="inl reveal"><input type="checkbox" ${pub.closeLosers ? 'checked' : ''} onchange="ui.setCloseLosers(this.checked)"> In Stage 3, close the biggest losers for one round when too many shops are open</label>`;
+  return `<label class="inl reveal"><input type="checkbox" ${pub.closeLosers ? 'checked' : ''} onchange="ui.setCloseLosers(this.checked)"> In Stage 3, close the biggest losers for two rounds when too many shops are open</label>`;
 }
 function revealToggle(pub) {
   return `<label class="inl reveal"><input type="checkbox" ${pub.reveal ? 'checked' : ''} onchange="ui.setReveal(this.checked)"> Tell students the balance level (about ${pub.nstar} shops) in Stage 3</label>`;
